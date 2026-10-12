@@ -1,0 +1,10 @@
+App(
+    appid="nissan_dashboard",
+    name="Nissan TPMS Dashboard",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="nissan_dashboard_app",
+    requires=["gui", "storage", "notification"],
+    stack_size=8 * 1024,
+    fap_category="Sub-GHz",
+    fap_icon="nissan_dashboard.png",
+)
