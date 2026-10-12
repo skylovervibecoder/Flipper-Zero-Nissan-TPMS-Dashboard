@@ -16,6 +16,7 @@ Disclaimer
 Please read carefully before using the app.
 
 Lawful and responsible use. 
+
 This app is intended for study, lab testing and experiments on your own vehicle and your own sensors.
 Radio regulations. Transmitting at 433.92 MHz is subject to the rules of your country (power, transmission time, permitted use). The app only checks that the firmware allows transmission on that frequency: compliance with the law remains your responsibility.
 Road safety. TPMS is a safety system. Sending false pressure values can hide a tire that is actually underinflated or damaged. Do not use the app to mask faults, and do not use it while driving on public roads. Always check the real pressure with a gauge.
