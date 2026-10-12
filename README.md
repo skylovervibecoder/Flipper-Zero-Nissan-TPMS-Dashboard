@@ -19,10 +19,18 @@ Please read carefully before using the app.
 Lawful and responsible use. 
 
 This app is intended for study, lab testing and experiments on your own vehicle and your own sensors.
-Radio regulations. Transmitting at 433.92 MHz is subject to the rules of your country (power, transmission time, permitted use). The app only checks that the firmware allows transmission on that frequency: compliance with the law remains your responsibility.
+
+Radio regulations. 
+Transmitting at 433.92 MHz is subject to the rules of your country (power, transmission time, permitted use). The app only checks that the firmware allows transmission on that frequency: compliance with the law remains your responsibility.
 Road safety. TPMS is a safety system. Sending false pressure values can hide a tire that is actually underinflated or damaged. Do not use the app to mask faults, and do not use it while driving on public roads. Always check the real pressure with a gauge.
+
+
 No warranty. The software is provided "as is", without warranties of any kind. The author is not liable for damage to people, vehicles, sensors or devices, or for legal consequences arising from use of the app. You use it entirely at your own risk.
+
+
 No affiliation. This project is independent and is not affiliated with, endorsed by or sponsored by Nissan, Renault or any vehicle or sensor manufacturer. Brand and protocol names are used only to describe compatibility.
+
+
 Data and IDs. Sensor IDs are stored on your SD card. Do not share your .car files if you do not want your sensor IDs to become public.
 
 How to use
