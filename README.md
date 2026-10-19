@@ -1,4 +1,7 @@
 # Flipper-Zero-Nissan-TPMS-Dashboard
+
+![receiver](n1.png) ![transmitter](n2.png)
+
 Flipper Zero app for pairing receiving and transmitting TPMS sensors data on Nissan cars.
  
 TESTED WITH MOMENTUM DEV FW
