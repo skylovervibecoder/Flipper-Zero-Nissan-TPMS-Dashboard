@@ -1,14 +1,12 @@
 /*
  * Nissan TPMS Dashboard - Flipper Zero
  *
- * App unica con menu principale:
- *   TPMS RX       ascolta a 433.92 MHz e mostra pressione/temperatura dei 4
- *                 sensori (LED che lampeggia e cambia colore a ogni frame valido)
- *   TPMS TX       trasmette frame TPMS con la pressione scelta per ogni ruota
- *   TPMS PAIR     riceve i sensori nei dintorni (qualsiasi ID): assegni a mano ogni
- *                 sensore a una ruota e salvi l'auto con un nome
- *   Impostazioni  cambia gli ID dei 4 sensori, salva/carica/elimina le auto
- *   About         versione e autore
+ * Single app with main menu:
+ *   Monitor       receives at 433.92 MHz and displays pressure/temperature
+ *   Transmit      sends TPMS frames using the selected pressure for each wheel
+ *   Pair sensors  discovers nearby sensors and assigns each one to a wheel
+ *   Settings      edits sensor IDs and saves, loads, or deletes vehicle profiles
+ *   About         version and author
  *
  * Formato frame (protocollo "Renault" di TPMS-Editor), FSK, Manchester, 433.92 MHz:
  *
@@ -32,23 +30,20 @@
  * (/ext/apps_data/tpms_editor, anche nelle sottocartelle) e prende da li' flag e
  * byte di stato delle ruote il cui ID corrisponde.
  *
- * Comandi:
- *   Menu       Su/Giu scegli, OK entra, Back esce dall'app
- *              Sinistra/Destra: auto precedente/successiva (nome nel titolo)
- *   TPMS RX    Sinistra/Destra scegli ruota, OK tenuto azzera, Back = menu
- *   TPMS TX    Sinistra/Destra scegli ruota (ANT SX, ANT DX, POST SX, POST DX, RESET)
- *              Su/Giu pressione +/-1 kPa (tieni premuto = +/-5)
- *              OK invia la ruota scelta
- *              OK tenuto applica la pressione scelta a TUTTE le ruote e le invia
- *              RESET + OK anteriori 230 kPa, posteriori 210 kPa, poi invia tutte
- *              Back = menu
- *   TPMS PAIR  Su/Giu scegli sensore, Sinistra/Destra assegna la ruota
- *              (ASx, ADx, PSx, PDx, --), OK salva (serve 4/4) e chiede il nome,
- *              OK tenuto svuota la lista, Back = menu
- *   Impostazioni
- *              Su/Giu scegli voce, OK apre/esegue, Back = menu
- *              Salva auto / Salva con nome / Carica auto (Sinistra = elimina)
- *              Editor ID: Sinistra/Destra cifra, Su/Giu valore, OK conferma, Back annulla
+ * Controls:
+ *   Menu       Up/Down selects, OK opens, Back exits the app
+ *              Left/Right switches between saved vehicles
+ *   Monitor    Left/Right selects a wheel, hold OK to reset, Back returns to menu
+ *   Transmit   Left/Right selects a wheel (FL, FR, RL, RR, RESET)
+ *              Up/Down changes pressure by 1 kPa (hold for +/-5)
+ *              OK sends the selected wheel; hold OK to send all wheels
+ *              RESET + OK applies 230 kPa front / 210 kPa rear and sends all
+ *   Pair       Up/Down selects a sensor, Left/Right assigns a wheel
+ *              (FL, FR, RL, RR, --); OK saves when all four are assigned
+ *              Hold OK to clear the list; Back returns to menu
+ *   Settings   Up/Down selects an item, OK opens/runs it, Back returns to menu
+ *              Save / Save as / Load vehicle (Left deletes a selected vehicle)
+ *              ID editor: Left/Right selects a digit, Up/Down changes it
  */
 
 #include <furi.h>
@@ -112,7 +107,7 @@
 /* ------------------------------------------------------------------------ */
 /* Sensori, in ordine: ANT SX, ANT DX, POST SX, POST DX.                      */
 /* ------------------------------------------------------------------------ */
-static const char* const k_names[N_WHEELS] = {"ANT SX", "ANT DX", "POST SX", "POST DX"};
+static const char* const k_names[N_WHEELS] = {"FL", "FR", "RL", "RR"};
 static const char* const k_cfg_keys[N_WHEELS] = {"ANT_SX", "ANT_DX", "POST_SX", "POST_DX"};
 
 /* ID segnaposto (usati finche' non ne imposti o accoppi di reali): cambiali da
@@ -1000,7 +995,7 @@ static LevelDuration tx_callback(void* context) {
 
 static bool transmit_sensor(uint8_t idx) {
     if(!furi_hal_subghz_is_tx_allowed(FREQ_HZ)) {
-        FURI_LOG_E(TAG, "TX non permessa su questa frequenza/regione");
+        FURI_LOG_E(TAG, "TX not allowed on this frequency/region");
         return false;
     }
     build_pulses(idx);
@@ -1027,7 +1022,7 @@ static void tx_send_one(App* app, uint8_t idx) {
     view_port_update(app->vp);
     bool ok = transmit_sensor(idx);
     app->sending = false;
-    snprintf(app->tx_msg, sizeof(app->tx_msg), ok ? "Inviato" : "Errore TX");
+    snprintf(app->tx_msg, sizeof(app->tx_msg), ok ? "Sent" : "TX error");
 }
 
 static void tx_send_all(App* app) {
@@ -1040,7 +1035,7 @@ static void tx_send_all(App* app) {
         app->sending = false;
         furi_delay_ms(400);
     }
-    snprintf(app->tx_msg, sizeof(app->tx_msg), ok ? "Inviate 4/4" : "Errore TX");
+    snprintf(app->tx_msg, sizeof(app->tx_msg), ok ? "Sent 4/4" : "TX error");
 }
 
 static void tx_do_reset(App* app) {
@@ -1105,61 +1100,47 @@ static void draw_car(Canvas* canvas, uint8_t sel, const char* const vals[N_WHEEL
 static void format_age(char* out, size_t n, uint32_t age_ms) {
     uint32_t s = age_ms / 1000U;
     if(s < 60U) {
-        snprintf(out, n, "%us fa", (unsigned)s);
+        snprintf(out, n, "%us ago", (unsigned)s);
     } else if(s < 3600U) {
-        snprintf(out, n, "%um fa", (unsigned)(s / 60U));
+        snprintf(out, n, "%um ago", (unsigned)(s / 60U));
     } else {
-        snprintf(out, n, "%uh fa", (unsigned)(s / 3600U));
+        snprintf(out, n, "%uh ago", (unsigned)(s / 3600U));
     }
 }
 
-/* ---- menu principale ---------------------------------------------------- */
+/* ---- Main menu --------------------------------------------------------- */
 
 static const char* const k_menu_items[MENU_ITEMS] = {
-    "TPMS RX", "TPMS TX", "TPMS PAIR", "Impostazioni", "About"};
-
-#define MENU_VISIBLE 4U
+    "Monitor", "Transmit", "Pair sensors", "Settings", "About"};
 
 static void draw_menu(Canvas* canvas, const App* app) {
-    const char* title = g_car_name[0] ? g_car_name : "Nissan TPMS Dashboard";
+    const char* title = g_car_name[0] ? g_car_name : "NISSAN TPMS";
     canvas_set_font(canvas, FontPrimary);
-    if(canvas_string_width(canvas, title) > 110) canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str_aligned(canvas, 64, 0, AlignCenter, AlignTop, title);
-    canvas_set_font(canvas, FontPrimary);
-    if(g_car_name[0]) { /* Sinistra/Destra cambia auto */
-        canvas_draw_str(canvas, 3, 9, "<");
-        canvas_draw_str(canvas, 119, 9, ">");
-    }
-    canvas_draw_line(canvas, 4, 11, 123, 11);
+    if(canvas_string_width(canvas, title) > 108) canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 3, 9, title);
 
-    /* finestra scorrevole di MENU_VISIBLE voci: il selezionato resta sempre visibile */
-    uint8_t first = (app->menu_sel >= MENU_VISIBLE) ? (uint8_t)(app->menu_sel - (MENU_VISIBLE - 1U)) : 0U;
-
+    /* Minimal text-only menu: five compact rows and a simple selection marker. */
+    canvas_draw_line(canvas, 2, 12, 125, 12);
     canvas_set_font(canvas, FontSecondary);
-    for(uint8_t k = 0; k < MENU_VISIBLE; k++) {
-        uint8_t i = (uint8_t)(first + k);
-        int y = 13 + (int)k * 13; /* passo 13px, altezza 11px: 2px di aria tra le voci */
+    for(uint8_t i = 0; i < MENU_ITEMS; i++) {
+        int y = 14 + (int)i * 10;
         if(app->menu_sel == i) {
-            canvas_draw_rbox(canvas, 8, y, 112, 11, 3);
+            canvas_draw_box(canvas, 2, y, 123, 9);
             canvas_set_color(canvas, ColorWhite);
+            canvas_draw_str(canvas, 6, y + 7, "> ");
+            canvas_draw_str(canvas, 18, y + 7, k_menu_items[i]);
+            canvas_set_color(canvas, ColorBlack);
         } else {
-            canvas_draw_rframe(canvas, 8, y, 112, 11, 3);
+            canvas_draw_str(canvas, 18, y + 7, k_menu_items[i]);
         }
-        canvas_draw_str_aligned(canvas, 64, y + 5, AlignCenter, AlignCenter, k_menu_items[i]);
-        canvas_set_color(canvas, ColorBlack);
     }
-
-    /* barra di scorrimento */
-    int thumb_h = (int)(50U * MENU_VISIBLE / MENU_ITEMS);
-    int thumb_y = 13 + (int)first * (50 - thumb_h) / (int)(MENU_ITEMS - MENU_VISIBLE);
-    canvas_draw_box(canvas, 125, thumb_y, 2, (size_t)thumb_h);
 }
 
 /* ---- About --------------------------------------------------------------- */
 
 static void draw_about(Canvas* canvas) {
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str_aligned(canvas, 64, 26, AlignCenter, AlignCenter, "Ver 1.0");
+    canvas_draw_str_aligned(canvas, 64, 26, AlignCenter, AlignCenter, "Version 1.1");
     canvas_set_font(canvas, FontSecondary);
     canvas_draw_str_aligned(canvas, 64, 42, AlignCenter, AlignCenter, "created by Marcopiiit");
 }
@@ -1219,8 +1200,8 @@ static void draw_rx(Canvas* canvas, const App* app) {
         canvas_set_font(canvas, FontPrimary);
         canvas_draw_str(canvas, 76, 33, "--");
         canvas_set_font(canvas, FontSecondary);
-        canvas_draw_str(canvas, 76, 43, "in attesa");
-        canvas_draw_str(canvas, 76, 52, "del sensore");
+        canvas_draw_str(canvas, 76, 43, "Waiting for");
+        canvas_draw_str(canvas, 76, 52, "sensor");
     }
 }
 
@@ -1274,15 +1255,15 @@ static void draw_tx(Canvas* canvas, const App* app) {
             buf, sizeof(buf), "%u.%02u bar %u psi", bar100 / 100U, bar100 % 100U, (psi10 + 5U) / 10U);
         canvas_draw_str(canvas, 76, 45, buf);
 
-        if(!s->from_profile) canvas_draw_str(canvas, 76, 53, "dati provv.");
+        if(!s->from_profile) canvas_draw_str(canvas, 76, 53, "Default data");
     } else {
         canvas_set_font(canvas, FontPrimary);
         canvas_draw_str(canvas, 76, 12, "RESET");
         canvas_set_font(canvas, FontSecondary);
-        canvas_draw_str(canvas, 76, 26, "Anteriori");
+        canvas_draw_str(canvas, 76, 26, "Front");
         snprintf(buf, sizeof(buf), "%u kPa", (unsigned)KPA_FRONT_DEFAULT);
         canvas_draw_str(canvas, 76, 35, buf);
-        canvas_draw_str(canvas, 76, 45, "Posteriori");
+        canvas_draw_str(canvas, 76, 45, "Rear");
         snprintf(buf, sizeof(buf), "%u kPa", (unsigned)KPA_REAR_DEFAULT);
         canvas_draw_str(canvas, 76, 54, buf);
     }
@@ -1294,11 +1275,11 @@ static void draw_tx(Canvas* canvas, const App* app) {
     } else if(app->tx_msg[0]) {
         canvas_draw_str(canvas, 76, 63, app->tx_msg);
     } else {
-        canvas_draw_str(canvas, 76, 63, "OK = invia");
+        canvas_draw_str(canvas, 76, 63, "OK: send");
     }
 }
 
-/* ---- Impostazioni ------------------------------------------------------- */
+/* ---- Settings ----------------------------------------------------------- */
 
 static void draw_settings(Canvas* canvas, const App* app) {
     char buf[24];
@@ -1308,7 +1289,7 @@ static void draw_settings(Canvas* canvas, const App* app) {
         buf,
         sizeof(buf),
         "%s%s",
-        g_car_name[0] ? g_car_name : "Impostazioni",
+        g_car_name[0] ? g_car_name : "Settings",
         config_dirty() ? "*" : "");
     canvas_draw_str(canvas, 2, 10, buf);
     canvas_set_font(canvas, FontSecondary);
@@ -1329,13 +1310,13 @@ static void draw_settings(Canvas* canvas, const App* app) {
             snprintf(buf, sizeof(buf), "%02X %02X %02X", g_id[r][0], g_id[r][1], g_id[r][2]);
             canvas_draw_str_aligned(canvas, 119, y0 + 5, AlignRight, AlignCenter, buf);
         } else {
-            const char* label = "Ripristina predefiniti";
+            const char* label = "Reset defaults";
             if(r == SET_SAVE) {
-                label = "Salva auto";
+                label = "Save vehicle";
             } else if(r == SET_SAVEAS) {
-                label = "Salva con nome...";
+                label = "Save as...";
             } else if(r == SET_LOAD) {
-                label = "Carica auto";
+                label = "Load vehicle";
             }
             canvas_draw_str_aligned(canvas, 5, y0 + 5, AlignLeft, AlignCenter, label);
         }
@@ -1348,7 +1329,7 @@ static void draw_settings(Canvas* canvas, const App* app) {
     canvas_draw_box(canvas, 125, thumb_y, 2, (size_t)thumb_h);
 }
 
-/* ---- editor ID ---------------------------------------------------------- */
+/* ---- ID editor ---------------------------------------------------------- */
 
 static const char k_hex[] = "0123456789ABCDEF";
 
@@ -1393,15 +1374,15 @@ static void draw_id_edit(Canvas* canvas, const App* app) {
 
     canvas_set_font(canvas, FontSecondary);
     if(app->edit_msg[0]) canvas_draw_str(canvas, 2, 47, app->edit_msg);
-    canvas_draw_str(canvas, 2, 55, "Su/Giu: valore");
-    canvas_draw_str(canvas, 2, 63, "Sx/Dx: cifra");
-    canvas_draw_str(canvas, 80, 55, "OK salva");
-    canvas_draw_str(canvas, 80, 63, "Back esci");
+    canvas_draw_str(canvas, 2, 55, "Up/Down: value");
+    canvas_draw_str(canvas, 2, 63, "Left/Right: digit");
+    canvas_draw_str(canvas, 80, 55, "OK: save");
+    canvas_draw_str(canvas, 80, 63, "Back: exit");
 }
 
 /* ---- PAIR --------------------------------------------------------------- */
 
-static const char* const k_short[N_WHEELS] = {"ASx", "ADx", "PSx", "PDx"};
+static const char* const k_short[N_WHEELS] = {"FL", "FR", "RL", "RR"};
 
 static void draw_pair(Canvas* canvas, const App* app) {
     char buf[24];
@@ -1410,13 +1391,13 @@ static void draw_pair(Canvas* canvas, const App* app) {
     snprintf(buf, sizeof(buf), "PAIR %u/4", (unsigned)pair_assigned(app));
     canvas_draw_str(canvas, 2, 10, buf);
     canvas_set_font(canvas, FontSecondary);
-    snprintf(buf, sizeof(buf), "%u visti", (unsigned)app->pair_n);
+    snprintf(buf, sizeof(buf), "%u found", (unsigned)app->pair_n);
     canvas_draw_str_aligned(canvas, 126, 5, AlignRight, AlignCenter, buf);
     canvas_draw_line(canvas, 0, 12, 127, 12);
 
     if(app->pair_n == 0U) {
-        canvas_draw_str_aligned(canvas, 64, 27, AlignCenter, AlignCenter, "In ascolto a 433.92");
-        canvas_draw_str_aligned(canvas, 64, 39, AlignCenter, AlignCenter, "Sveglia i sensori");
+        canvas_draw_str_aligned(canvas, 64, 27, AlignCenter, AlignCenter, "Listening: 433.92 MHz");
+        canvas_draw_str_aligned(canvas, 64, 39, AlignCenter, AlignCenter, "Wake up sensors");
     }
 
     for(uint8_t r = app->pair_scroll; r < app->pair_n && r < app->pair_scroll + PAIR_VISIBLE; r++) {
@@ -1446,21 +1427,21 @@ static void draw_pair(Canvas* canvas, const App* app) {
         canvas_draw_box(canvas, 125, thumb_y, 2, (size_t)thumb_h);
     }
 
-    canvas_draw_str(canvas, 2, 63, app->pair_msg[0] ? app->pair_msg : "Sx/Dx=ruota  OK=salva");
+    canvas_draw_str(canvas, 2, 63, app->pair_msg[0] ? app->pair_msg : "L/R: wheel  OK: save");
 }
 
-/* ---- elenco auto -------------------------------------------------------- */
+/* ---- Vehicle list ------------------------------------------------------- */
 
 static void draw_cars(Canvas* canvas, const App* app) {
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 2, 10, "Carica auto");
+    canvas_draw_str(canvas, 2, 10, "Load vehicle");
     canvas_set_font(canvas, FontSecondary);
     canvas_draw_str_aligned(
-        canvas, 126, 5, AlignRight, AlignCenter, app->cars_msg[0] ? app->cars_msg : "Sx=elimina");
+        canvas, 126, 5, AlignRight, AlignCenter, app->cars_msg[0] ? app->cars_msg : "Left: delete");
     canvas_draw_line(canvas, 0, 12, 127, 12);
 
     if(app->cars_n == 0U) {
-        canvas_draw_str_aligned(canvas, 64, 34, AlignCenter, AlignCenter, "Nessuna auto salvata");
+        canvas_draw_str_aligned(canvas, 64, 34, AlignCenter, AlignCenter, "No saved vehicles");
     }
 
     for(uint8_t r = app->cars_scroll; r < app->cars_n && r < app->cars_scroll + SET_VISIBLE; r++) {
@@ -1483,11 +1464,11 @@ static void draw_cars(Canvas* canvas, const App* app) {
     }
 }
 
-/* ---- editor nome auto --------------------------------------------------- */
+/* ---- Vehicle name editor ------------------------------------------------ */
 
 static void draw_name(Canvas* canvas, const App* app) {
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 2, 10, "Nome auto");
+    canvas_draw_str(canvas, 2, 10, "Vehicle name");
     canvas_draw_line(canvas, 0, 12, 127, 12);
 
     for(uint8_t pos = 0; pos < CAR_NAME_LEN; pos++) {
@@ -1504,10 +1485,10 @@ static void draw_name(Canvas* canvas, const App* app) {
 
     canvas_set_font(canvas, FontSecondary);
     if(app->edit_msg[0]) canvas_draw_str(canvas, 2, 47, app->edit_msg);
-    canvas_draw_str(canvas, 2, 55, "Su/Giu: lettera");
-    canvas_draw_str(canvas, 2, 63, "Sx/Dx: posizione");
-    canvas_draw_str(canvas, 88, 55, "OK salva");
-    canvas_draw_str(canvas, 88, 63, "Back esci");
+    canvas_draw_str(canvas, 2, 55, "Up/Down: letter");
+    canvas_draw_str(canvas, 2, 63, "Left/Right: position");
+    canvas_draw_str(canvas, 88, 55, "OK: save");
+    canvas_draw_str(canvas, 88, 63, "Back: exit");
 }
 
 static void draw_cb(Canvas* canvas, void* ctx) {
@@ -1579,7 +1560,7 @@ static const char k_namechars[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
 static void name_init(App* app, uint8_t from) {
     memset(app->name_buf, ' ', CAR_NAME_LEN);
     app->name_buf[CAR_NAME_LEN] = 0;
-    const char* src = g_car_name[0] ? g_car_name : "AUTO";
+    const char* src = g_car_name[0] ? g_car_name : "CAR";
     size_t l = strlen(src);
     if(l > CAR_NAME_LEN) l = CAR_NAME_LEN;
     memcpy(app->name_buf, src, l);
@@ -1604,7 +1585,7 @@ static void name_confirm(App* app) {
         if(app->name_buf[i] != ' ') last = (int)i;
     }
     if(last < 0) {
-        snprintf(app->edit_msg, sizeof(app->edit_msg), "Nome vuoto!");
+        snprintf(app->edit_msg, sizeof(app->edit_msg), "Name is empty!");
         return;
     }
     for(int i = 0; i <= last; i++) {
@@ -1619,7 +1600,7 @@ static void name_confirm(App* app) {
         snprintf(g_car_name, sizeof(g_car_name), "%s", name);
         active_save();
     }
-    snprintf(app->set_msg, sizeof(app->set_msg), "%s", ok ? "Salvata" : "Errore SD");
+    snprintf(app->set_msg, sizeof(app->set_msg), "%s", ok ? "Saved" : "SD card error");
     app->set_sel = 0;
     app->set_scroll = 0;
     app->screen = ScreenSettings;
@@ -1657,7 +1638,7 @@ static bool on_input_menu(App* app, const InputEvent* ev) {
         } else if(app->menu_sel == 1U) {
             profiles_rescan();
             snprintf(
-                app->tx_msg, sizeof(app->tx_msg), "Profili %u/4", (unsigned)g_profiles_loaded);
+                app->tx_msg, sizeof(app->tx_msg), "Profiles %u/4", (unsigned)g_profiles_loaded);
             app->screen = ScreenTx;
         } else if(app->menu_sel == 2U) {
             pair_enter(app);
@@ -1791,7 +1772,7 @@ static bool on_input_settings(App* app, const InputEvent* ev) {
             if(g_car_name[0]) {
                 bool ok = car_save(g_car_name);
                 if(ok) active_save();
-                snprintf(app->set_msg, sizeof(app->set_msg), "%s", ok ? "Salvata" : "Errore SD");
+                snprintf(app->set_msg, sizeof(app->set_msg), "%s", ok ? "Saved" : "SD card error");
             } else {
                 name_init(app, 0); /* nessuna auto attiva: serve un nome */
             }
@@ -1810,7 +1791,7 @@ static bool on_input_settings(App* app, const InputEvent* ev) {
             app->screen = ScreenCars;
         } else {
             ids_reset_default();
-            snprintf(app->set_msg, sizeof(app->set_msg), "Predefiniti");
+            snprintf(app->set_msg, sizeof(app->set_msg), "Defaults reset");
         }
         return true;
     case InputKeyBack:
@@ -1844,12 +1825,12 @@ static bool on_input_id_edit(App* app, const InputEvent* ev) {
     case InputKeyOk:
         if(ev->type != InputTypeShort) return false;
         if(id_in_use(app->edit_id, app->edit_wheel)) {
-            snprintf(app->edit_msg, sizeof(app->edit_msg), "ID gia' usato!");
+            snprintf(app->edit_msg, sizeof(app->edit_msg), "ID already in use!");
             return true;
         }
         if(memcmp(g_id[app->edit_wheel], app->edit_id, 3) != 0) {
             wheel_set_id(app->edit_wheel, app->edit_id);
-            snprintf(app->set_msg, sizeof(app->set_msg), "ID cambiato");
+            snprintf(app->set_msg, sizeof(app->set_msg), "ID updated");
         } else {
             app->set_msg[0] = 0;
         }
@@ -1870,7 +1851,7 @@ static bool on_input_pair(App* app, const InputEvent* ev) {
         app->pair_n = 0;
         app->pair_sel = 0;
         app->pair_scroll = 0;
-        snprintf(app->pair_msg, sizeof(app->pair_msg), "Lista svuotata");
+        snprintf(app->pair_msg, sizeof(app->pair_msg), "List cleared");
         return true;
     }
     if(ev->type != InputTypeShort && ev->type != InputTypeRepeat) return false;
@@ -1904,7 +1885,7 @@ static bool on_input_pair(App* app, const InputEvent* ev) {
         if(ev->type != InputTypeShort) return false;
         uint8_t n = pair_assigned(app);
         if(n < N_WHEELS) {
-            snprintf(app->pair_msg, sizeof(app->pair_msg), "Assegna 4 ruote (%u/4)", (unsigned)n);
+            snprintf(app->pair_msg, sizeof(app->pair_msg), "Assign 4 wheels (%u/4)", (unsigned)n);
         } else {
             rx_leave(app);
             name_init(app, 1);
@@ -1943,7 +1924,7 @@ static bool on_input_cars(App* app, const InputEvent* ev) {
     case InputKeyLeft:
         if(ev->type != InputTypeShort || app->cars_n == 0U) return false;
         app->cars_del = true; /* serve una conferma con OK */
-        snprintf(app->cars_msg, sizeof(app->cars_msg), "OK elimina?");
+        snprintf(app->cars_msg, sizeof(app->cars_msg), "OK: delete?");
         return true;
     case InputKeyOk:
         if(ev->type != InputTypeShort || app->cars_n == 0U) return false;
@@ -1957,14 +1938,14 @@ static bool on_input_cars(App* app, const InputEvent* ev) {
             app->cars_scroll = 0;
             list_fix_scroll(app->cars_sel, &app->cars_scroll, SET_VISIBLE);
             app->cars_del = false;
-            snprintf(app->cars_msg, sizeof(app->cars_msg), "Eliminata");
+            snprintf(app->cars_msg, sizeof(app->cars_msg), "Deleted");
         } else if(car_activate(app->cars[app->cars_sel])) {
-            snprintf(app->set_msg, sizeof(app->set_msg), "Caricata");
+            snprintf(app->set_msg, sizeof(app->set_msg), "Loaded");
             app->set_sel = 0;
             app->set_scroll = 0;
             app->screen = ScreenSettings;
         } else {
-            snprintf(app->cars_msg, sizeof(app->cars_msg), "File errato");
+            snprintf(app->cars_msg, sizeof(app->cars_msg), "Invalid file");
         }
         return true;
     case InputKeyBack:
