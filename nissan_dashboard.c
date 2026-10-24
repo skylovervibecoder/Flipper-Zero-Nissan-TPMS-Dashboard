@@ -364,6 +364,7 @@ typedef struct {
     uint8_t tx_sel; /* 0..3 ruota, 4 = RESET */
     bool sending;
     char tx_msg[20];
+    FuriThread* scan_thread; /* scansione profili .tpms in background (NULL = ferma) */
 
     /* Impostazioni */
     uint8_t set_sel;
@@ -883,6 +884,7 @@ static void build_frame(uint8_t idx, uint8_t* d) {
 /* ---- lettura profili .tpms: flag, byte di stato e temperatura ---------- */
 
 static uint8_t g_profiles_loaded = 0;
+static volatile bool g_scan_abort = false;
 
 static void try_profile(Storage* st, const char* path) {
     FlipperFormat* ff = flipper_format_file_alloc(st);
@@ -916,7 +918,9 @@ static void scan_dir(Storage* st, const char* dir_path, uint8_t depth) {
     if(storage_dir_open(dir, dir_path)) {
         FileInfo info;
         char name[48];
-        while(storage_dir_read(dir, &info, name, sizeof(name))) {
+        /* esce appena tutte e 4 le ruote hanno i loro dati, o se l'app sta chiudendo */
+        while(!g_scan_abort && g_profiles_loaded < N_WHEELS &&
+              storage_dir_read(dir, &info, name, sizeof(name))) {
             char full[120];
             snprintf(full, sizeof(full), "%s/%s", dir_path, name);
             if(file_info_is_dir(&info)) {
@@ -931,16 +935,96 @@ static void scan_dir(Storage* st, const char* dir_path, uint8_t depth) {
     storage_file_free(dir);
 }
 
-/* Rilegge i profili per gli ID attuali (da chiamare entrando in TX). */
-static void profiles_rescan(void) {
+/* Cache: se l'ultima scansione ha trovato tutte e 4 le ruote e gli ID non sono
+ * cambiati, non c'e' nulla da cercare e la scansione si salta. */
+static uint8_t g_scan_ids[N_WHEELS][3];
+static bool g_scan_full = false;
+
+static volatile bool g_scan_running = false;
+
+static void profiles_scan_body(void) {
     g_profiles_loaded = 0;
     for(uint8_t i = 0; i < N_WHEELS; i++) {
         g_tx[i].from_profile = g_tx[i].locked;
         if(g_tx[i].locked) g_profiles_loaded++;
     }
-    Storage* st = furi_record_open(RECORD_STORAGE);
-    scan_dir(st, PROFILE_ROOT, 0);
-    furi_record_close(RECORD_STORAGE);
+    if(g_profiles_loaded < N_WHEELS) {
+        Storage* st = furi_record_open(RECORD_STORAGE);
+        scan_dir(st, PROFILE_ROOT, 0);
+        furi_record_close(RECORD_STORAGE);
+    }
+    if(!g_scan_abort) {
+        g_scan_full = (g_profiles_loaded >= N_WHEELS);
+        memcpy(g_scan_ids, g_id, sizeof(g_id));
+    }
+}
+
+static int32_t profiles_scan_thread(void* ctx) {
+    UNUSED(ctx);
+    profiles_scan_body();
+    g_scan_running = false;
+    return 0;
+}
+
+/* true se i dati TX sono gia' completi e valgono ancora per gli ID attuali */
+static bool profiles_up_to_date(void) {
+    uint8_t n = 0;
+    bool all_locked = true;
+    for(uint8_t i = 0; i < N_WHEELS; i++) {
+        if(g_tx[i].from_profile) n++;
+        if(!g_tx[i].locked) all_locked = false;
+    }
+    if(all_locked) {
+        g_profiles_loaded = N_WHEELS;
+        return true;
+    }
+    if(g_scan_full && n == N_WHEELS && memcmp(g_scan_ids, g_id, sizeof(g_id)) == 0) {
+        g_profiles_loaded = N_WHEELS;
+        return true;
+    }
+    return false;
+}
+
+/* Versione bloccante, per il salvataggio auto: aspetta l'eventuale scansione in
+ * background e rilegge solo se serve. */
+static void profiles_rescan(void) {
+    while(g_scan_running) furi_delay_ms(10);
+    if(profiles_up_to_date()) return;
+    profiles_scan_body();
+}
+
+/* Entrando in TX: la schermata si apre subito, i profili si leggono in background. */
+static void profiles_rescan_async(App* app) {
+    if(app->scan_thread) return; /* gia' in corso */
+    if(profiles_up_to_date()) {
+        snprintf(app->tx_msg, sizeof(app->tx_msg), "Prof. %u/4", (unsigned)g_profiles_loaded);
+        return;
+    }
+    g_scan_abort = false;
+    g_scan_running = true;
+    app->tx_msg[0] = 0;
+    app->scan_thread = furi_thread_alloc_ex("TpmsScan", 4096, profiles_scan_thread, NULL);
+    furi_thread_start(app->scan_thread);
+}
+
+/* Chiamata dal ciclo principale: chiude il thread quando ha finito. */
+static bool profiles_scan_poll(App* app) {
+    if(!app->scan_thread) return false;
+    if(furi_thread_get_state(app->scan_thread) != FuriThreadStateStopped) return false;
+    furi_thread_join(app->scan_thread);
+    furi_thread_free(app->scan_thread);
+    app->scan_thread = NULL;
+    snprintf(app->tx_msg, sizeof(app->tx_msg), "Prof. %u/4", (unsigned)g_profiles_loaded);
+    return true;
+}
+
+/* Chiamata in uscita: interrompe e attende la scansione. */
+static void profiles_scan_stop(App* app) {
+    if(!app->scan_thread) return;
+    g_scan_abort = true;
+    furi_thread_join(app->scan_thread);
+    furi_thread_free(app->scan_thread);
+    app->scan_thread = NULL;
 }
 
 /* ---- trasmissione ------------------------------------------------------ */
@@ -1140,7 +1224,7 @@ static void draw_menu(Canvas* canvas, const App* app) {
 
 static void draw_about(Canvas* canvas) {
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str_aligned(canvas, 64, 26, AlignCenter, AlignCenter, "Version 1.1");
+    canvas_draw_str_aligned(canvas, 64, 26, AlignCenter, AlignCenter, "Version 1.2beta");
     canvas_set_font(canvas, FontSecondary);
     canvas_draw_str_aligned(canvas, 64, 42, AlignCenter, AlignCenter, "created by Marcopiiit");
 }
@@ -1238,24 +1322,28 @@ static void draw_tx(Canvas* canvas, const App* app) {
     if(app->tx_sel < N_WHEELS) {
         const TxSensor* s = &g_tx[app->tx_sel];
 
+        /* pannello destro: x da 76 a 127 (solo 52 px), tutto deve starci */
         canvas_set_font(canvas, FontPrimary);
         canvas_draw_str(canvas, 76, 12, k_names[app->tx_sel]);
+
+        /* unita' in alto a destra, cosi' il numero grande ha tutta la larghezza */
+        canvas_set_font(canvas, FontSecondary);
+        canvas_draw_str_aligned(canvas, 127, 6, AlignRight, AlignCenter, "kPa");
 
         canvas_set_font(canvas, FontBigNumbers);
         snprintf(buf, sizeof(buf), "%u", (unsigned)s->kpa);
         canvas_draw_str(canvas, 76, 34, buf);
-        int w = (int)canvas_string_width(canvas, buf);
 
-        canvas_set_font(canvas, FontSecondary);
-        canvas_draw_str(canvas, 76 + w + 3, 34, "kPa");
-
-        unsigned bar100 = s->kpa; /* kPa = bar*100 */
         unsigned psi10 = (unsigned)(((uint32_t)s->kpa * 145U + 50U) / 100U);
-        snprintf(
-            buf, sizeof(buf), "%u.%02u bar %u psi", bar100 / 100U, bar100 % 100U, (psi10 + 5U) / 10U);
-        canvas_draw_str(canvas, 76, 45, buf);
+        canvas_set_font(canvas, FontSecondary);
 
-        if(!s->from_profile) canvas_draw_str(canvas, 76, 53, "Default data");
+        /* bar e psi su due righe: insieme non entrano nei 52 px */
+        snprintf(buf, sizeof(buf), "%u.%02u bar", (unsigned)(s->kpa / 100U), (unsigned)(s->kpa % 100U));
+        canvas_draw_str(canvas, 76, 44, buf);
+
+        snprintf(buf, sizeof(buf), "%u psi", (psi10 + 5U) / 10U);
+        canvas_draw_str(canvas, 76, 53, buf);
+        if(!s->from_profile) canvas_draw_str_aligned(canvas, 127, 49, AlignRight, AlignCenter, "dflt");
     } else {
         canvas_set_font(canvas, FontPrimary);
         canvas_draw_str(canvas, 76, 12, "RESET");
@@ -1272,6 +1360,8 @@ static void draw_tx(Canvas* canvas, const App* app) {
     canvas_set_font(canvas, FontSecondary);
     if(app->sending) {
         canvas_draw_str(canvas, 76, 63, app->tx_msg[0] ? app->tx_msg : "TX...");
+    } else if(app->scan_thread) {
+        canvas_draw_str(canvas, 76, 63, "Scan...");
     } else if(app->tx_msg[0]) {
         canvas_draw_str(canvas, 76, 63, app->tx_msg);
     } else {
@@ -1636,10 +1726,8 @@ static bool on_input_menu(App* app, const InputEvent* ev) {
             app->screen = ScreenRx;
             rx_enter(app);
         } else if(app->menu_sel == 1U) {
-            profiles_rescan();
-            snprintf(
-                app->tx_msg, sizeof(app->tx_msg), "Profiles %u/4", (unsigned)g_profiles_loaded);
-            app->screen = ScreenTx;
+            app->screen = ScreenTx; /* si apre subito */
+            profiles_rescan_async(app);
         } else if(app->menu_sel == 2U) {
             pair_enter(app);
         } else if(app->menu_sel == 3U) {
@@ -1711,6 +1799,7 @@ static bool on_input_tx(App* app, const InputEvent* ev) {
             app->tx_msg[0] = 0;
             break;
         case InputKeyOk:
+            if(app->scan_thread) break; /* dati ancora in lettura */
             if(ev->type == InputTypeShort) {
                 if(app->tx_sel == SEL_RESET) {
                     tx_do_reset(app);
@@ -1726,6 +1815,7 @@ static bool on_input_tx(App* app, const InputEvent* ev) {
             break;
         }
     } else if(ev->type == InputTypeLong && ev->key == InputKeyOk) {
+        if(app->scan_thread) return true;
         if(app->tx_sel == SEL_RESET) {
             tx_do_reset(app);
         } else {
@@ -2057,6 +2147,7 @@ int32_t nissan_dashboard_app(void* p) {
 
         /* 1) ricezione: svuota gli impulsi e decodifica */
         if(app->rx_active) changed = rx_poll(app);
+        if(profiles_scan_poll(app)) changed = true;
 
         /* 2) tasti (in RX attesa breve, per non far traboccare il buffer) */
         uint32_t timeout = app->rx_active ? 5U : 100U;
@@ -2072,6 +2163,7 @@ int32_t nissan_dashboard_app(void* p) {
         }
     }
 
+    profiles_scan_stop(app);
     rx_leave(app);
     notification_message(app->notif, &sequence_reset_rgb);
     furi_record_close(RECORD_NOTIFICATION);
